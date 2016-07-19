@@ -1,0 +1,74 @@
+# BeatUp-Windows.ps1
+#
+
+$psProcess = gps -id $PID
+$psInstances = (gps -Name $psProcess.name).count
+if ($psInstances -gt 1) {
+  $psName = “{0}#{1}” -f $psProcess.name,$($psInstances – 1)
+}     
+else {
+  $psName = $psProcess.name
+}
+
+# RAM in box
+$box=get-WMIobject Win32_ComputerSystem
+$Global:physMB=$box.TotalPhysicalMemory / 1024 /1024
+
+#####################
+# perfmon counters
+$Global:psPerfCPU = new-object System.Diagnostics.PerformanceCounter(“Processor”,”% Processor Time”,”_Total”)
+$Global:psPerfMEM = new-object System.Diagnostics.PerformanceCounter(“Memory”,”Available Mbytes”)
+$psPerfCPU.NextValue() | Out-Null
+$psPerfMEM.NextValue() | Out-Null
+
+# timer
+$Global:psTimer   = New-Object System.Timers.Timer
+$psTimer.Interval = 1500
+
+# every timer interval, update the CMD shell window with RAM and CPU info.
+#
+Register-ObjectEvent -InputObject $psTimer -EventName Elapsed -Action {
+    [int]$ram = $physMB – $psPerfMEM.NextValue()
+    [int]$cpu = $psPerfCPU.NextValue()
+    $Host.ui.rawui.WindowTitle = “$($CurrentUser.Name) $($Host.Name) $($Host.Version) | $((get-location).ProviderPath) | RAM used: $ram MB CPU: $cpu%”           
+} | Out-Null
+$psTimer.start()
+
+# So first task – let’s now go soak up all available RAM
+#####################
+$a = “a” * 256MB
+$growArray = @()
+$growArray += $a
+# leave 512Mb for the OS to survive.
+$HEADROOM=512
+$bigArray = @()
+$ram = $physMB – $psPerfMEM.NextValue()
+$MAXRAM=$physMB – $HEADROOM
+$k=0
+while ($ram -lt $MAXRAM) {
+  $bigArray += ,@($k,$growArray)
+  $k += 1
+  $growArray += $a
+  $ram = $physMB – $psPerfMEM.NextValue()
+}
+#####################
+# and now release it all.
+$bigArray.clear()
+remove-variable bigArray
+$growArray.clear()
+remove-variable growArray
+[System.GC]::Collect()
+#####################
+
+#
+# and now launch N powershell processes to saturate all CPU’s.
+#
+$SCRIPT=”foreach (`$n in 1..2147483647) {`$r=1; foreach (`$x in 1..2147483647) {`$r = `$r * `$x}; `$r }”
+$si = new-object System.Diagnostics.ProcessStartInfo
+$si.FileName = “PowerShell.EXE”
+$si.Arguments = $SCRIPT
+
+$cpus=$env:NUMBER_OF_PROCESSORS
+for ($cpu = 0; $cpu -lt $cpus; $cpu++) {
+  $proc = [System.Diagnostics.Process]::Start($si)
+}
